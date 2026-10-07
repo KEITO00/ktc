@@ -6,8 +6,10 @@ KTC is an audio compression format designed mainly for use with KT3.
 It aims to make the data small while keeping the sound indistinguishable from the original to the human ear.
 
 - The file extension is `.ktc`.
-- Inside a KT3 file, KTC is `mediaFormat` 5.
-  - See §2.2 of the [KT3 specification](https://github.com/KEITO00/kt3-format) for details.
+- KTC is used for the audio of KT3 and KT4 files.
+  - In KT3, it is `mediaFormat` 5.
+  - In KT4, it is used for the audio from version 7.
+  - See §2.2 and §6.5 of the [KT3 specification](https://github.com/KEITO00/kt3-format) for details.
 - All integers are little-endian.
 
 This document defines the layout of the data and the decoding steps.

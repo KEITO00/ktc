@@ -1,0 +1,13 @@
+[package]
+name = "ktc"
+version = "1.0.0"
+edition = "2021"
+description = "KTC の復元 (参照実装)"
+license = "MIT"
+repository = "https://github.com/KEITO00/ktc"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+codegen-units = 1

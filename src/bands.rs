@@ -25,22 +25,41 @@ pub fn edges(sr: u32, n: usize) -> Vec<(usize, usize)> {
 
 pub(crate) const CLASSES: usize = 8;
 
+const SPLIT_WIDTH: usize = 32;
+
 pub struct Layout {
     pub m: usize,
     pub bands: Vec<(usize, usize)>,
     pub(crate) class: Vec<usize>,
     pub low_hz: Vec<f64>,
+    pub parent: Vec<usize>,
+    pub parent_width: Vec<usize>,
+    pub parents: usize,
+    pub mixed_from: usize,
 }
 
 impl Layout {
-    pub fn new(sr: u32, n: usize) -> Self {
+    pub fn new(sr: u32, n: usize, mixed_hz: f64) -> Self {
         let edges = edges(sr, n);
         let m = n / 2;
-        let nb = edges.len();
-        let bands: Vec<(usize, usize)> = edges.iter().enumerate().map(|(i, &(a, b))| (a - 1, if i + 1 == nb { m } else { b - 1 })).collect();
+        let ne = edges.len();
+        let hz = |a: usize| a as f64 * sr as f64 / n as f64;
+        let max_w = (SPLIT_WIDTH * m / 1024).max(2);
+        let (mut bands, mut parent, mut parent_width) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, &(a, b)) in edges.iter().enumerate() {
+            let (lo, hi) = (a - 1, if i + 1 == ne { m } else { b - 1 });
+            let parts = if mixed_hz > 0.0 && hz(lo) >= mixed_hz { (hi - lo).div_ceil(max_w) } else { 1 };
+            for p in 0..parts {
+                bands.push((lo + (hi - lo) * p / parts, lo + (hi - lo) * (p + 1) / parts));
+                parent.push(i);
+                parent_width.push(hi - lo);
+            }
+        }
+        let nb = bands.len();
         let class = (0..nb).map(|b| (b * CLASSES / nb).min(CLASSES - 1)).collect();
-        let low_hz = bands.iter().map(|&(a, _)| a as f64 * sr as f64 / n as f64).collect();
-        Layout { m, bands, class, low_hz }
+        let low_hz: Vec<f64> = bands.iter().map(|&(a, _)| hz(a)).collect();
+        let mixed_from = if mixed_hz > 0.0 { low_hz.iter().position(|&f| f >= mixed_hz).unwrap_or(nb) } else { nb };
+        Layout { m, bands, class, low_hz, parent, parent_width, parents: ne, mixed_from }
     }
 }
 
@@ -52,16 +71,21 @@ mod tests {
     fn bands_cover_the_coefficients_in_order() {
         for sr in [29000, 44100, 48000] {
             for n in [256, 2048] {
-                let l = Layout::new(sr, n);
-                assert_eq!(l.bands.first().unwrap().0, 0);
-                assert_eq!(l.bands.last().unwrap().1, n / 2);
-                for w in l.bands.windows(2) {
-                    assert!(w[0].0 < w[0].1);
-                    assert_eq!(w[0].1, w[1].0);
+                for mixed in [0.0, 8000.0] {
+                    let l = Layout::new(sr, n, mixed);
+                    assert_eq!(l.bands.first().unwrap().0, 0);
+                    assert_eq!(l.bands.last().unwrap().1, n / 2);
+                    for w in l.bands.windows(2) {
+                        assert!(w[0].0 < w[0].1);
+                        assert_eq!(w[0].1, w[1].0);
+                    }
                 }
             }
-            let nb = Layout::new(sr, 2048).bands.len();
+            let nb = Layout::new(sr, 2048, 0.0).bands.len();
             assert!(nb > 30 && nb < 60, "{nb} bands at {sr}");
+            let l = Layout::new(sr, 2048, 8000.0);
+            assert!(l.bands[l.mixed_from..].iter().all(|&(a, b)| b - a <= 32));
+            assert!(l.low_hz[l.mixed_from] >= 8000.0 && l.low_hz[l.mixed_from - 1] < 8000.0);
         }
     }
 }

@@ -4,9 +4,13 @@ use crate::rc;
 use crate::transform::{M, N, NS};
 
 pub const MAGIC: &[u8; 4] = b"KTC\0";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const FILL_KINDS: usize = 3;
 const HEADER: usize = 4 + 1 + 1 + 2 + 4 + 8 + 2 + FILL_KINDS;
+
+fn header_len(version: u8) -> usize {
+    if version >= 2 { HEADER + 2 } else { HEADER }
+}
 pub const CHUNK: usize = 1024;
 
 pub fn chunk_seed(c: usize) -> u32 {
@@ -19,20 +23,25 @@ pub struct Header {
     pub len: usize,
     pub offsets: [i8; 2],
     pub fill: [u8; FILL_KINDS],
+    pub mixed_hz: u16,
 }
 
 pub fn write(h: &Header, frames: &mut [Frame]) -> Vec<u8> {
-    let ll = Layout::new(h.sr, N);
-    let ls = Layout::new(h.sr, NS);
-    let mut out = Vec::with_capacity(HEADER);
+    let ll = Layout::new(h.sr, N, h.mixed_hz as f64);
+    let ls = Layout::new(h.sr, NS, h.mixed_hz as f64);
+    let version = if h.mixed_hz > 0 { 2 } else { 1 };
+    let mut out = Vec::with_capacity(header_len(version));
     out.extend_from_slice(MAGIC);
-    out.push(VERSION);
+    out.push(version);
     out.push(h.chans as u8);
     out.extend(h.offsets.map(|v| v as u8));
     out.extend_from_slice(&h.sr.to_le_bytes());
     out.extend_from_slice(&(h.len as u64).to_le_bytes());
     out.extend_from_slice(&(N as u16).to_le_bytes());
     out.extend_from_slice(&h.fill);
+    if version >= 2 {
+        out.extend_from_slice(&h.mixed_hz.to_le_bytes());
+    }
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let mut enc = rc::Encoder::new();
     let mut first = true;
@@ -73,10 +82,16 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
     if data.len() < HEADER || &data[0..4] != MAGIC {
         return Err("KTC のデータではありません".into());
     }
-    if data[4] != VERSION {
-        return Err(format!("この版 ({}) の KTC には対応していません", data[4]));
+    let version = data[4];
+    if !(1..=VERSION).contains(&version) {
+        return Err(format!("この版 ({version}) の KTC には対応していません"));
     }
+    let head = header_len(version);
     let bad = || "KTC のヘッダーが正しくありません".to_string();
+    if data.len() < head {
+        return Err(bad());
+    }
+    let mixed_hz = if version >= 2 { u16::from_le_bytes(data[HEADER..HEADER + 2].try_into().unwrap()) as f64 } else { 0.0 };
     let chans = data[5] as usize;
     let off = [data[6], data[7]].map(|v| v as i8 as f64 / 128.0);
     let sr = u32::from_le_bytes(data[8..12].try_into().unwrap());
@@ -88,19 +103,19 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
     }
     let len = len64 as usize;
     let u32_at = |o: usize| data.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize).ok_or_else(bad);
-    let count = u32_at(HEADER)?;
+    let count = u32_at(head)?;
     if count != (len.div_ceil(M) + 1).div_ceil(CHUNK) {
         return Err(bad());
     }
-    let mut pos = HEADER + 4 + count * 4;
+    let mut pos = head + 4 + count * 4;
     let mut chunks = Vec::with_capacity(count);
     for c in 0..count {
-        let size = u32_at(HEADER + 4 + c * 4)?;
+        let size = u32_at(head + 4 + c * 4)?;
         if pos + size > data.len() {
             return Err("KTC のデータが途中で切れています".into());
         }
         chunks.push(pos..pos + size);
         pos += size;
     }
-    Ok(Info { chans, sr, len, off, fill, chunks, ll: Layout::new(sr, N), ls: Layout::new(sr, NS) })
+    Ok(Info { chans, sr, len, off, fill, chunks, ll: Layout::new(sr, N, mixed_hz), ls: Layout::new(sr, NS, mixed_hz) })
 }

@@ -10,6 +10,11 @@ pub const PART_ZERO: usize = 2;
 pub const PART_MAG: usize = 3;
 pub const PART_SIGN: usize = 4;
 
+pub const IID_MAX: i32 = 30;
+pub const ICC: [f64; 8] = [1.0, 0.94, 0.84, 0.6, 0.37, 0.0, -0.59, -1.0];
+pub const KP_STEPS: i32 = 8;
+pub const KP_MAX: i32 = 16;
+
 const LV: usize = 5;
 const NCTX: usize = LV * LV + 2 * LV * LV * LV;
 const MAG_STEPS: usize = 14;
@@ -37,6 +42,9 @@ struct Model {
     mx: Mixer,
     steps: [[[[Prob; MAG_STEPS]; 3 * LV - 2]; 3]; CLASSES],
     esc: [[Prob; 40]; CLASSES],
+    iid: [Prob; 40],
+    icc: [Prob; 40],
+    kp: [Prob; 40],
 }
 
 impl Model {
@@ -60,6 +68,9 @@ impl Model {
             mx: Mixer::new(2 * CLASSES, NM + 1, MIX_LR),
             steps: [[[[Prob::INIT; MAG_STEPS]; 3 * LV - 2]; 3]; CLASSES],
             esc: [[Prob::INIT; 40]; CLASSES],
+            iid: [Prob::INIT; 40],
+            icc: [Prob::INIT; 40],
+            kp: [Prob::INIT; 40],
         })
     }
 }
@@ -87,12 +98,25 @@ struct ChanState {
     prev_level: Vec<i32>,
     prev_zero: Vec<bool>,
     prev_noise: Vec<bool>,
+    prev_iid: Vec<i32>,
+    prev_icc: Vec<i32>,
+    prev_kp: Vec<i32>,
 }
 
 impl ChanState {
     fn new(l: &Layout) -> Self {
         let nb = l.bands.len();
-        ChanState { prev_q: vec![0; l.m], prev_sf: vec![0; nb], prev_level: vec![0; nb], prev_zero: vec![true; nb], prev_noise: vec![false; nb] }
+        let np = l.parents;
+        ChanState {
+            prev_q: vec![0; l.m],
+            prev_sf: vec![0; nb],
+            prev_level: vec![0; nb],
+            prev_zero: vec![true; nb],
+            prev_noise: vec![false; nb],
+            prev_iid: vec![0; np],
+            prev_icc: vec![0; np],
+            prev_kp: vec![0; np],
+        }
     }
 }
 
@@ -118,6 +142,9 @@ pub struct Group {
     pub level: Vec<[i32; 2]>,
     pub sf: Vec<[i32; 2]>,
     pub q: [Vec<i32>; 2],
+    pub iid: Vec<i32>,
+    pub icc: Vec<i32>,
+    pub kp: Vec<i32>,
 }
 
 impl Group {
@@ -132,6 +159,9 @@ impl Group {
             level: vec![[0; 2]; nb],
             sf: vec![[0; 2]; nb],
             q: [vec![0; l.m * rows], vec![0; l.m * rows]],
+            iid: vec![0; l.parents],
+            icc: vec![0; l.parents],
+            kp: vec![0; l.parents],
         }
     }
 }
@@ -139,6 +169,7 @@ impl Group {
 pub struct Frame {
     pub kind: Kind,
     pub groups: Vec<Group>,
+    pub env: [i32; SHORTS],
 }
 
 pub fn step(sf: i32) -> f64 {
@@ -161,11 +192,29 @@ fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st:
         let cls = l.class[b];
         let grp = (b * 3 / nb).min(2);
         c.part(PART_SIDE);
-        if chans == 2 {
+        let joint = chans == 2 && b >= l.mixed_from;
+        if joint {
+            g.ms[b] = false;
+        } else if chans == 2 {
             g.ms[b] = c.bit(&mut md.ms[cls][prev_ms[b] as usize], g.ms[b]);
             prev_ms[b] = g.ms[b];
         }
         for ch in 0..chans {
+            if joint && ch == 1 {
+                c.part(PART_SIDE);
+                let s = &mut st[1];
+                g.noise[b][1] = false;
+                g.sf[b][1] = g.sf[b][0];
+                let z = g.zero[b][0] || c.bit(&mut md.zero[cls][s.prev_zero[b] as usize], g.zero[b][1]);
+                g.zero[b][1] = z;
+                s.prev_zero[b] = z;
+                if z {
+                    for j in 0..g.rows {
+                        g.q[1][j * m + a..j * m + e].fill(0);
+                    }
+                }
+                continue;
+            }
             c.part(PART_SIDE);
             let s = &mut st[ch];
             let z = c.bit(&mut md.zero[cls][s.prev_zero[b] as usize], g.zero[b][ch]);
@@ -199,6 +248,16 @@ fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st:
             let d = rc::sint(c, &mut md.sf[grp], g.sf[b][ch] - pred);
             g.sf[b][ch] = pred + d;
             last[ch] = Some((b, g.sf[b][ch]));
+            if b >= l.mixed_from {
+                let s = &mut st[ch];
+                let pred = match last_level[ch] {
+                    Some((lb, lv)) => median(lv, s.prev_level[b], lv + s.prev_level[b] - s.prev_level[lb]),
+                    None => s.prev_level[b],
+                };
+                let d = rc::sint(c, &mut md.level[grp], g.level[b][ch] - pred);
+                g.level[b][ch] = pred + d;
+                last_level[ch] = Some((b, g.level[b][ch]));
+            }
         }
     }
     for j in 0..g.rows {
@@ -216,7 +275,12 @@ fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st:
                     level_band(sum * r / (e - a) as u64)
                 };
                 let mut seen = 0usize;
+                let sparse = ch == 1 && b >= l.mixed_from;
                 for k in a..e {
+                    if sparse && g.q[0][row + k] == 0 {
+                        g.q[1][row + k] = 0;
+                        continue;
+                    }
                     let (lv_l, lv_u, lv_x, pat) = {
                         let q = &g.q[ch];
                         let q1 = if k > 0 { q[row + k - 1].unsigned_abs() } else { 0 };
@@ -268,12 +332,53 @@ fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st:
             }
         }
     }
+    if chans == 2 && l.mixed_from < nb {
+        c.part(PART_SIDE);
+        let s = &st[0];
+        let (mut last, mut last_p): (Option<usize>, Option<usize>) = (None, None);
+        let mut coded = Vec::new();
+        let mut b = l.mixed_from;
+        while b < nb {
+            let p = l.parent[b];
+            let e = (b..nb).find(|&i| l.parent[i] != p).unwrap_or(nb);
+            if (b..e).any(|i| !g.zero[i][0] || g.noise[i][0]) {
+                let pred = |cur: &[i32], prev: &[i32], last: Option<usize>| match last {
+                    Some(lp) => median(cur[lp], prev[p], cur[lp] + prev[p] - prev[lp]),
+                    None => prev[p],
+                };
+                let pi = pred(&g.iid, &s.prev_iid, last);
+                g.iid[p] = pi + rc::sint(c, &mut md.iid, g.iid[p] - pi);
+                let pc = pred(&g.icc, &s.prev_icc, last);
+                g.icc[p] = pc + rc::sint(c, &mut md.icc, g.icc[p] - pc);
+                last = Some(p);
+                let peaks = (b..e).any(|i| !g.zero[i][0]);
+                if peaks {
+                    let pp = pred(&g.kp, &s.prev_kp, last_p);
+                    g.kp[p] = pp + rc::sint(c, &mut md.kp, g.kp[p] - pp);
+                    last_p = Some(p);
+                }
+                coded.push((p, peaks));
+            }
+            b = e;
+        }
+        let s = &mut st[0];
+        for (p, peaks) in coded {
+            s.prev_iid[p] = g.iid[p];
+            s.prev_icc[p] = g.icc[p];
+            if peaks {
+                s.prev_kp[p] = g.kp[p];
+            }
+        }
+    }
     let last_row = (g.rows - 1) * m;
     for ch in 0..chans {
         st[ch].prev_q.copy_from_slice(&g.q[ch][last_row..last_row + m]);
         for b in 0..nb {
             if !g.zero[b][ch] {
                 st[ch].prev_sf[b] = g.sf[b][ch];
+                if b >= l.mixed_from && ch == 0 {
+                    st[ch].prev_level[b] = g.level[b][ch];
+                }
             } else if g.noise[b][ch] {
                 st[ch].prev_level[b] = g.level[b][ch];
             }
@@ -320,11 +425,14 @@ pub(crate) struct Coding {
     sq: Stretch,
     kind_p: [[Prob; 3]; 4],
     group_p: [Prob; 2],
+    env_p: [Prob; 2],
+    env_d: [[Prob; 40]; 2],
     st_long: Vec<ChanState>,
     st_short: Vec<ChanState>,
     ms_long: Vec<bool>,
     ms_short: Vec<bool>,
     prev_kind: Kind,
+    prev_shaped: bool,
 }
 
 impl Coding {
@@ -335,11 +443,14 @@ impl Coding {
             sq: Stretch::new(),
             kind_p: [[Prob::INIT; 3]; 4],
             group_p: [Prob::INIT; 2],
+            env_p: [Prob::INIT; 2],
+            env_d: [[Prob::INIT; 40]; 2],
             st_long: vec![ChanState::new(ll); chans],
             st_short: vec![ChanState::new(ls); chans],
             ms_long: vec![false; ll.bands.len()],
             ms_short: vec![false; ls.bands.len()],
             prev_kind: Kind::Long,
+            prev_shaped: false,
         }
     }
 }
@@ -400,6 +511,25 @@ pub(crate) fn code_frame<C: Coder>(c: &mut C, cd: &mut Coding, ll: &Layout, ls: 
             f.groups = vec![Group::new(ll, 1)];
         }
         code_group(c, &mut cd.long, &cd.sq, ll, &mut cd.st_long, &mut cd.ms_long, &mut f.groups[0]);
+    }
+    if ll.mixed_from < ll.bands.len() {
+        c.part(PART_SIDE);
+        let e0 = f.env[0];
+        for e in f.env.iter_mut() {
+            *e -= e0;
+        }
+        let shaped = c.bit(&mut cd.env_p[cd.prev_shaped as usize], f.env.iter().any(|&e| e != 0));
+        cd.prev_shaped = shaped;
+        if shaped {
+            let mut prev = 0;
+            for j in 1..SHORTS {
+                let d = rc::sint(c, &mut cd.env_d[(prev != 0) as usize], f.env[j] - f.env[j - 1]);
+                f.env[j] = f.env[j - 1] + d;
+                prev = d;
+            }
+        } else {
+            f.env = [0; SHORTS];
+        }
     }
 }
 

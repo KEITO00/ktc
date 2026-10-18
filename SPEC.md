@@ -82,6 +82,14 @@ u32 size[count]     size of each chunk in bytes
 - A reader SHOULD decode several chunks at the same time.
   - This shortens the wait when a track is opened.
 
+### 4.2 Looping audio
+
+- When the audio loops (for example, a KT3 loop), a writer SHOULD encode the last frames with the continuation of the loop placed after the end of the audio.
+  - The continuation is the audio from the loop start.
+  - If the loop end is before the end of the audio, the continuation starts later than the loop start by the number of samples from the loop end to the end of the audio.
+  - If the part after the end is encoded as silence, the error in the last few samples grows, and a click can be heard at the loop point.
+- The decoded audio still has `length` samples. The continuation is not stored as samples.
+
 ## 5. Decoding steps
 
 Each frame is decoded in this order:

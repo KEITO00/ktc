@@ -4,6 +4,18 @@ The `version` byte of the header describes the layout of the data.
 
 ヘッダーの `version` は、データ構造の版を表します。
 
+## Looping audio (2026-10-18)
+
+- Added section 4.2 about looping audio.
+  - A writer SHOULD encode the last frames with the continuation of the loop (the audio from the loop start) placed after the end of the audio.
+  - This keeps the error in the last few samples small, so that no click is heard at the loop point.
+- The data layout and the `version` byte do not change.
+
+- ループする音声についての 4.2 を追加しました。
+  - 書き込み側は、音声の最後より後ろにループの続きの音（ループの開始位置からの音）を配置して、最後のフレームを符号化すべきです（SHOULD）。
+  - 最後の数サンプルの誤差を小さくし、ループのつなぎ目で雑音が聞こえないようにするためです。
+- データ構造と `version` は変更しません。
+
 ## Version 2 (2026-10-08)
 
 - Added mixed bands above the frequency given by the new header field `mixedHz`.

@@ -62,31 +62,31 @@ You can support KTC in your own software without asking for permission. See [LIC
 
 ## 日本語
 
-KTC は、主に [KT3](https://github.com/KEITO00/kt3-format) の利用を目的とした独自の音声圧縮方式です。
+KTC は、主に [KT3](https://github.com/KEITO00/kt3-format) での利用を目的とした独自の音声圧縮方式です。
 
 ### 文書
 
 - [SPEC.ja.md](SPEC.ja.md)：仕様（[English](SPEC.md)）
-- [CHANGELOG.md](CHANGELOG.md)：形式の版ごとの変更
+- [CHANGELOG.md](CHANGELOG.md)：形式の版ごとの変更点
 
 ### 参照実装
 
-このリポジトリには、復元の参照実装が入っています。外部のライブラリを使わず、Rust で書いています。
+このリポジトリには、デコーダーの参照実装を収録しています。外部のライブラリを使用せず、Rust で実装しています。
 
 #### Rust
 
-`Cargo.toml` の `[dependencies]` に、次の行を足してください。
+`Cargo.toml` の `[dependencies]` に、次の行を追加してください。
 
 ```toml
 ktc = { git = "https://github.com/KEITO00/ktc" }
 ```
 
 - `ktc::decode(データ)` で、全体を復元します。
-- いくつもの CPU で同時に復元する時は、`ktc::info` でヘッダーを読み、`ktc::decode_chunk` で塊ごとに復元して、`ktc::add_chunk` で足し合わせます。
+- 複数の CPU で並行して復元する場合は、`ktc::info` でヘッダーを読み取り、`ktc::decode_chunk` でチャンクごとに復元して、`ktc::add_chunk` で加算してください。
 
 #### WebAssembly
 
-次のコマンドで `ktc.wasm` を作れます。Rust の `wasm32-unknown-unknown` が必要です。
+次のコマンドで `ktc.wasm` を作成できます。Rust のターゲット `wasm32-unknown-unknown` が必要です。
 
 ```
 cargo rustc --lib --release --target wasm32-unknown-unknown --crate-type cdylib
@@ -94,24 +94,24 @@ cargo rustc --lib --release --target wasm32-unknown-unknown --crate-type cdylib
 
 | 関数 | 説明 |
 |---|---|
-| `ktc_alloc(len)` | データを書き込む場所を `len` バイト取り、その位置を返します |
-| `ktc_free(ptr, len)` | `ktc_alloc` で取った場所を解放します |
-| `ktc_info(ptr, len)` | ヘッダーを読みます |
+| `ktc_alloc(len)` | データを書き込む領域を `len` バイト確保し、そのアドレスを返します |
+| `ktc_free(ptr, len)` | `ktc_alloc` で確保した領域を解放します |
+| `ktc_info(ptr, len)` | ヘッダーを読み取ります |
 | `ktc_decode(ptr, len)` | 全体を復元します |
-| `ktc_decode_chunk(ptr, len, c)` | 塊 `c` を復元します |
-| `ktc_free_result(ptr)` | 結果の場所を解放します |
+| `ktc_decode_chunk(ptr, len, c)` | チャンク `c` を復元します |
+| `ktc_free_result(ptr)` | 結果の領域を解放します |
 
-結果は、4 バイトずつの値の並びです。
+結果は、4 バイトの値の配列です。
 
-- [0] は、並び全体の値の数です。
-- [1] は、成功なら 0、失敗なら 1 です。
-- 成功した時の [2] 以降は、次のとおりです。
-  - `ktc_info`：チャンネル数、サンプリング周波数、1 チャンネルのサンプル数、塊の数
-  - `ktc_decode`：チャンネル数、サンプリング周波数、1 チャンネルのサンプル数、サンプル（f32。チャンネルごとにまとめて並べます）
-  - `ktc_decode_chunk`：チャンネル数、復元した音全体の中での開始位置（i32。負のこともあります）、1 チャンネルのサンプル数、サンプル（f32。チャンネルごとにまとめて並べます）
-    - 隣の塊と重なる所は、呼ぶ側で足し合わせます。
-- 失敗した時の [2] はエラーの文章のバイト数で、[3] 以降がその文章（UTF-8）です。
+- [0] は、配列全体の値の数です。
+- [1] は、成功した場合は 0、失敗した場合は 1 です。
+- 成功した場合の [2] 以降は、次のとおりです。
+  - `ktc_info`：チャンネル数、サンプリング周波数、1 チャンネルあたりのサンプル数、チャンク数
+  - `ktc_decode`：チャンネル数、サンプリング周波数、1 チャンネルあたりのサンプル数、サンプル（f32。チャンネルごとにまとめて並べます）
+  - `ktc_decode_chunk`：チャンネル数、復元した音声全体の中での開始位置（i32。負の値の場合があります）、1 チャンネルあたりのサンプル数、サンプル（f32。チャンネルごとにまとめて並べます）
+    - 隣接するチャンクと重なる部分は、呼び出し側で加算してください。
+- 失敗した場合の [2] はエラーメッセージのバイト数で、[3] 以降がそのメッセージ（UTF-8）です。
 
 ### ライセンス
 
-仕様は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) で公開しています。参照実装のコードは、MIT ライセンスで公開しています。許可なく、ソフトウェアを KTC に対応させることができます。詳しくは [LICENSE](LICENSE) を参照してください。
+仕様は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) で公開しています。参照実装のコードは、MIT ライセンスで公開しています。許可を得ることなく、ソフトウェアを KTC に対応させることができます。詳しくは [LICENSE](LICENSE) を参照してください。

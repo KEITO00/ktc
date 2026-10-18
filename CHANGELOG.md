@@ -2,7 +2,7 @@
 
 The `version` byte of the header describes the layout of the data.
 
-ヘッダーの `version` は、データの並びの版を表します。
+ヘッダーの `version` は、データ構造の版を表します。
 
 ## Version 2 (2026-10-08)
 
@@ -13,12 +13,12 @@ The `version` byte of the header describes the layout of the data.
   - With two channels, only the sum is stored, together with the level ratio, the similarity and the difference prediction of the left and right.
 - Readers that read version 2 also read version 1.
 
-- ヘッダーの新しい項目 `mixedHz` の周波数より上を、混ぜて記録する帯域にしました。
-  - 一部の係数だけを記録し、残りは大きさだけを記録した雑音で埋めます。
-  - 帯域を 32 個以下（短い窓では 4 個以下）の係数ずつに分けます。
-  - 長い窓のフレームの雑音は短い窓で作り、その時間の形をフレームごとに記録します。
-  - 2 チャンネルの時は和だけを記録し、左右の大きさの比・似ている度合い・差の予測を添えます。
-- 版 2 を読む側は、版 1 も読みます。
+- ヘッダーに新しい項目 `mixedHz` を追加し、その周波数より上の帯域を混合帯域としました。
+  - 一部の係数だけを記録し、残りはレベルだけを記録した雑音で埋めます。
+  - 帯域を 32 個以下（短い窓では 4 個以下）の係数ずつに分割します。
+  - 長い窓のフレームの雑音は短い窓で生成し、その時間包絡をフレームごとに記録します。
+  - 2 チャンネルの場合は和だけを記録し、左右のレベル比・相関・差の予測を併せて記録します。
+- 版 2 に対応した読み込み側は、版 1 も読み込めます。
 
 ## Version 1 (2026-10-07)
 
@@ -30,8 +30,8 @@ The `version` byte of the header describes the layout of the data.
   - The data is split into chunks of 1024 frames, and each chunk can be decoded on its own.
 
 - 最初の版を定めました。
-  - 長い窓（2048 サンプル）と短い窓（256 サンプル）を、つなぎの窓を挟んで切り替えます。
-  - 帯域はおよそ 0.5 Bark ずつで、帯域ごとに L/R か M/S で記録します。
-  - 係数は、いくつかの手がかりの予測を混ぜる算術符号で詰めます。
-  - 0 に丸めた所と雑音の帯域は、雑音で埋めます。
-  - データを 1024 フレームずつの塊に分け、塊ごとに単独で復元できるようにしました。
+  - 長い窓（2048 サンプル）と短い窓（256 サンプル）を、遷移窓を挟んで切り替えます。
+  - 帯域の幅は約 0.5 Bark で、帯域ごとに L/R または M/S で記録します。
+  - 係数は、複数のコンテキストの予測を混合する算術符号で符号化します。
+  - 0 に量子化された箇所と雑音の帯域は、雑音で埋めます。
+  - データを 1024 フレームずつのチャンクに分割し、チャンクごとに単独で復元できるようにしました。

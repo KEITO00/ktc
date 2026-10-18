@@ -80,7 +80,7 @@ u32 size[count]     size of each chunk in bytes
   - Adjacent chunks overlap by 1024 samples.
   - The overlapping parts are added together.
 - A reader SHOULD decode several chunks at the same time.
-  - Tracks then open with less waiting.
+  - This shortens the wait when a track is opened.
 
 ## 5. Decoding steps
 
@@ -195,7 +195,7 @@ After the coefficients of a group, the following values are stored for each pare
 ### 6.6 Noise in long-window frames
 
 - In long-window frames, the noise of the mixed bands is not put into the long-window coefficients; it is made with eight short windows and added.
-  - The noise level can then change at the resolution of a short window (about 3 ms).
+  - This allows the noise level to change at the resolution of a short window (about 3 ms).
   - The short windows are placed in the same positions as in short-window frames.
 - For a part that covers the coefficients `[lo, hi)`, its noise goes into the short-window coefficients `[ceil(lo / 8), ceil(hi / 8))`.
 - The noise energy of window `j` is the number of zeros × `E` × `g[j]` / 64.
@@ -220,7 +220,7 @@ implementation (`src` in this repository).
 | Functions for WebAssembly | `src/wasm.rs` |
 
 - The contexts of the arithmetic coder are computed with integers only.
-  - Every device then reads the same values.
+  - All devices therefore read the same values.
 - The decoded sample values may differ slightly in the last digits between devices.
   - This comes from small differences in trigonometric and power functions.
   - It does not affect how the audio sounds.

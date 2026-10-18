@@ -114,4 +114,4 @@ cargo rustc --lib --release --target wasm32-unknown-unknown --crate-type cdylib
 
 ### ライセンス
 
-仕様は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) で公開しています。参照実装のコードは、MIT ライセンスで公開しています。許可を得ることなく、ソフトウェアを KTC に対応させることができます。詳しくは [LICENSE](LICENSE) を参照してください。
+仕様は [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/deed.ja) で公開しています。参照実装のコードは、MIT ライセンスで公開しています。許可を得ることなく、ソフトウェアに KTC を実装できます。詳しくは [LICENSE](LICENSE) を参照してください。

@@ -80,14 +80,14 @@ impl Info {
 
 pub fn info(data: &[u8]) -> Result<Info, String> {
     if data.len() < HEADER || &data[0..4] != MAGIC {
-        return Err("KTC のデータではありません".into());
+        return Err("Not KTC data".into());
     }
     let version = data[4];
     if !(1..=VERSION).contains(&version) {
-        return Err(format!("この版 ({version}) の KTC には対応していません"));
+        return Err(format!("KTC version {version} is not supported"));
     }
     let head = header_len(version);
-    let bad = || "KTC のヘッダーが正しくありません".to_string();
+    let bad = || "The KTC header is invalid".to_string();
     if data.len() < head {
         return Err(bad());
     }
@@ -112,7 +112,7 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
     for c in 0..count {
         let size = u32_at(head + 4 + c * 4)?;
         if pos + size > data.len() {
-            return Err("KTC のデータが途中で切れています".into());
+            return Err("The KTC data is truncated".into());
         }
         chunks.push(pos..pos + size);
         pos += size;

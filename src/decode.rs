@@ -199,7 +199,7 @@ fn stream(l: &Layout, g: &Group, chans: usize, gain: &[f64], rng: &mut u32, out:
 pub fn decode_chunk(data: &[u8], info: &Info, c: usize) -> Result<(isize, Vec<Vec<f32>>), String> {
     let count = info.len.div_ceil(M) + 1;
     let (a, b) = (c * CHUNK, ((c + 1) * CHUNK).min(count));
-    let range = info.chunks.get(c).ok_or("その塊はありません")?;
+    let range = info.chunks.get(c).ok_or_else(|| format!("Chunk {c} does not exist"))?;
     let mut dec = rc::Decoder::new(&data[range.clone()]);
     let mut cd = Coding::new(&info.ll, &info.ls, info.chans);
     let mut r = Renderer::new(&info.ll, &info.ls, info.chans, b - a, info.off, info.fill, chunk_seed(c));
@@ -267,7 +267,14 @@ impl<'a> Renderer<'a> {
     }
 
     pub fn frame(&mut self, fi: usize, f: &Frame) {
-        let span = fi * M..fi * M + N;
+        let mut out = std::mem::take(&mut self.out);
+        let mut span: Vec<&mut [f64]> = out.iter_mut().map(|c| &mut c[fi * M..fi * M + N]).collect();
+        self.render(f, &mut span);
+        drop(span);
+        self.out = out;
+    }
+
+    fn render(&mut self, f: &Frame, out: &mut [&mut [f64]]) {
         if f.kind == Kind::Short {
             let mut j0 = 0;
             for g in &f.groups {
@@ -281,12 +288,12 @@ impl<'a> Renderer<'a> {
                 j0 += g.rows;
             }
             for ch in 0..self.chans {
-                self.tf.synthesize(&self.coef_s[ch], Kind::Short, &mut self.out[ch][span.clone()]);
+                self.tf.synthesize(&self.coef_s[ch], Kind::Short, out[ch]);
             }
         } else {
             reconstruct(self.ll, &f.groups[0], self.chans, self.off, self.fill, &[1.0], &mut self.rng, &mut self.coef_l);
             for ch in 0..self.chans {
-                self.tf.synthesize(std::slice::from_ref(&self.coef_l[ch]), f.kind, &mut self.out[ch][span.clone()]);
+                self.tf.synthesize(std::slice::from_ref(&self.coef_l[ch]), f.kind, out[ch]);
             }
             if self.ll.mixed_from < self.ll.bands.len() {
                 for w in self.noise.iter_mut().flatten() {
@@ -294,7 +301,7 @@ impl<'a> Renderer<'a> {
                 }
                 stream(self.ll, &f.groups[0], self.chans, &env_gains(&f.env), &mut self.rng, &mut self.noise);
                 for ch in 0..self.chans {
-                    self.tf.synthesize(&self.noise[ch], Kind::Short, &mut self.out[ch][span.clone()]);
+                    self.tf.synthesize(&self.noise[ch], Kind::Short, out[ch]);
                 }
             }
         }
@@ -302,5 +309,74 @@ impl<'a> Renderer<'a> {
 
     pub fn into_f32(self) -> Vec<Vec<f32>> {
         self.out.iter().map(|c| c.iter().map(|&v| v as f32).collect()).collect()
+    }
+}
+
+pub struct Stream<'a> {
+    data: &'a [u8],
+    info: &'a Info,
+    count: usize,
+    g: usize,
+    dec: Option<rc::Decoder<'a>>,
+    cd: Option<Coding>,
+    r: Option<Renderer<'a>>,
+    f: Frame,
+    ring: Vec<Vec<f64>>,
+    carry: Vec<Vec<f32>>,
+}
+
+impl<'a> Stream<'a> {
+    pub fn new(data: &'a [u8], info: &'a Info) -> Self {
+        Self::from_chunk(data, info, 0)
+    }
+
+    pub fn from_chunk(data: &'a [u8], info: &'a Info, c: usize) -> Self {
+        Stream {
+            data,
+            info,
+            count: info.len.div_ceil(M) + 1,
+            g: c * CHUNK,
+            dec: None,
+            cd: None,
+            r: None,
+            f: Frame { kind: Kind::Long, groups: Vec::new(), env: [0; SHORTS] },
+            ring: vec![vec![0.0; N]; info.chans],
+            carry: vec![vec![0.0; M]; info.chans],
+        }
+    }
+
+    pub fn next(&mut self, out: &mut [Vec<f32>]) -> Result<Option<isize>, String> {
+        if self.g >= self.count {
+            return Ok(None);
+        }
+        let first = self.g % CHUNK == 0;
+        if first {
+            let c = self.g / CHUNK;
+            let range = self.info.chunks.get(c).ok_or_else(|| format!("Chunk {c} does not exist"))?;
+            self.dec = Some(rc::Decoder::new(&self.data[range.clone()]));
+            self.cd = Some(Coding::new(&self.info.ll, &self.info.ls, self.info.chans));
+            self.r = Some(Renderer::new(&self.info.ll, &self.info.ls, self.info.chans, 0, self.info.off, self.info.fill, chunk_seed(c)));
+            self.f = Frame { kind: Kind::Long, groups: Vec::new(), env: [0; SHORTS] };
+            for (cr, rg) in self.carry.iter_mut().zip(self.ring.iter_mut()) {
+                for (c, v) in cr.iter_mut().zip(rg.iter_mut()) {
+                    *c = *v as f32;
+                    *v = 0.0;
+                }
+            }
+        }
+        let (dec, cd, r) = (self.dec.as_mut().unwrap(), self.cd.as_mut().unwrap(), self.r.as_mut().unwrap());
+        code_frame(dec, cd, &self.info.ll, &self.info.ls, &mut self.f);
+        let mut span: Vec<&mut [f64]> = self.ring.iter_mut().map(|c| &mut c[..]).collect();
+        r.render(&self.f, &mut span);
+        for ((o, rg), cr) in out.iter_mut().zip(self.ring.iter_mut()).zip(&self.carry) {
+            for i in 0..M {
+                o[i] = if first { cr[i] + rg[i] as f32 } else { rg[i] as f32 };
+            }
+            rg.copy_within(M..N, 0);
+            rg[M..].fill(0.0);
+        }
+        let start = (self.g * M) as isize - M as isize;
+        self.g += 1;
+        Ok(Some(start))
     }
 }

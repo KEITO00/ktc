@@ -10,7 +10,7 @@ pub mod transform;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-pub use decode::{add_chunk, decode, decode_chunk};
+pub use decode::{add_chunk, decode, decode_chunk, Stream};
 pub use format::{info, Info};
 
 pub struct Audio {

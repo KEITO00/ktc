@@ -25,6 +25,14 @@ ktc = { git = "https://github.com/KEITO00/ktc" }
 
 - `ktc::decode(data)` decodes the whole data.
 - To decode on several CPUs at once, read the header with `ktc::info`, decode each chunk with `ktc::decode_chunk`, and add the chunks together with `ktc::add_chunk`.
+- To decode from the start a little at a time, use `ktc::Stream`.
+  - The samples are the same as those of `ktc::decode`.
+  - `Stream::new(data, &info)` starts from the beginning.
+  - `Stream::from_chunk(data, &info, c)` starts from chunk `c`. The samples are correct from the start of chunk `c`.
+  - Each call of `next(&mut out)` writes the next 1,024 samples of each channel to `out` and returns the position of the first sample in the whole decoded audio.
+  - Pass one `Vec<f32>` of at least 1,024 values per channel as `out`.
+  - The position may be negative. Samples before 0 or after the end of the audio are not part of the audio.
+  - After the last samples, `next` returns `None`.
 
 #### WebAssembly
 
@@ -83,6 +91,14 @@ ktc = { git = "https://github.com/KEITO00/ktc" }
 
 - `ktc::decode(データ)` で、全体を復元します。
 - 複数の CPU で並行して復元する場合は、`ktc::info` でヘッダーを読み取り、`ktc::decode_chunk` でチャンクごとに復元して、`ktc::add_chunk` で加算してください。
+- 先頭から少しずつ復元する場合は、`ktc::Stream` を使用してください。
+  - 復元される値は、`ktc::decode` と同じです。
+  - `Stream::new(データ, &info)` は、先頭から復元します。
+  - `Stream::from_chunk(データ, &info, c)` は、チャンク `c` から復元します。正しい値になるのは、チャンク `c` の先頭以降です。
+  - `next(&mut out)` を呼び出すたびに、各チャンネルの次の 1,024 サンプルを `out` に書き込み、最初のサンプルの、復元した音声全体の中での位置を返します。
+  - `out` には、チャンネルごとに 1,024 個以上の値を持つ `Vec<f32>` を渡してください。
+  - 位置は、負の値の場合があります。0 より前と、音声の終わりより後のサンプルは、音声に含まれません。
+  - 最後まで復元すると、`next` は `None` を返します。
 
 #### WebAssembly
 

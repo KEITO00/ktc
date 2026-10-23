@@ -2,6 +2,7 @@ use crate::bands::Layout;
 use crate::coding::{code_frame, fill_kind, step, Coding, Frame, Group, ICC, IID_MAX, KP_MAX, KP_STEPS};
 use crate::format::{chunk_seed, info, Info, CHUNK, FILL_KINDS};
 use crate::rc;
+use crate::tns;
 use crate::transform::{Kind, Transforms, M, MS, N, SHORTS};
 use crate::Audio;
 
@@ -38,6 +39,7 @@ struct Joint {
     er: f64,
     a: f64,
     b: f64,
+    sign: f64,
 }
 
 impl Joint {
@@ -50,6 +52,7 @@ impl Joint {
             er: 2.0 * energy / (1.0 + r),
             a: ((1.0 + rho) / 2.0).sqrt(),
             b: ((1.0 - rho) / 2.0).sqrt(),
+            sign: if g.flip[p] { -1.0 } else { 1.0 },
         }
     }
 
@@ -69,7 +72,7 @@ impl Joint {
             let g = if sum > 0.0 { (1.0 / sum).sqrt() } else { 0.0 };
             t.iter_mut().for_each(|v| *v *= g);
         }
-        let (sl, sr) = ((scale * self.el).sqrt(), (scale * self.er).sqrt());
+        let (sl, sr) = ((scale * self.el).sqrt(), self.sign * (scale * self.er).sqrt());
         for (i, &k) in pos.iter().enumerate() {
             l[k] = sl * (self.a * tmp[0][i] + self.b * tmp[1][i]);
             r[k] = sr * (self.a * tmp[0][i] - self.b * tmp[1][i]);
@@ -82,9 +85,12 @@ fn band_energy(g: &Group, b: usize) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reconstruct(l: &Layout, g: &Group, chans: usize, off: [f64; 2], fill: [f64; FILL_KINDS], gain: &[f64], rng: &mut u32, out: &mut [Vec<f64>]) {
+#[allow(clippy::too_many_arguments)]
+fn reconstruct(l: &Layout, g: &Group, chans: usize, off: [f64; 2], fill: [f64; FILL_KINDS], gain: &[f64], rng: &mut u32, out: &mut [Vec<f64>], band_fill: bool) {
     let m = l.m;
-    let stream = m == M;
+    // 長い窓で TNS をかけないフレームは、混合帯域の雑音を短い窓で別に作る (stream)。
+    // TNS をかけるフレームは、雑音もここで作り、TNS で時間の形を付ける
+    let stream = m == M && !tns_on_mixed(l, g);
     let mut pos = Vec::new();
     let mut tmp = [Vec::new(), Vec::new()];
     for (b, &(lo, hi)) in l.bands.iter().enumerate() {
@@ -106,7 +112,7 @@ fn reconstruct(l: &Layout, g: &Group, chans: usize, off: [f64; 2], fill: [f64; F
                         let mm = deq(q);
                         let ss = jt.k * mm + deq(g.q[1][k]);
                         left[0][k] = (mm + ss) * std::f64::consts::FRAC_1_SQRT_2;
-                        right[0][k] = (mm - ss) * std::f64::consts::FRAC_1_SQRT_2;
+                        right[0][k] = jt.sign * (mm - ss) * std::f64::consts::FRAC_1_SQRT_2;
                     }
                 }
                 if !stream {
@@ -118,7 +124,7 @@ fn reconstruct(l: &Layout, g: &Group, chans: usize, off: [f64; 2], fill: [f64; F
         for ch in 0..chans {
             let per = if mixed && stream {
                 0.0
-            } else if !g.zero[b][ch] && mixed {
+            } else if !g.zero[b][ch] && (mixed || band_fill) {
                 level_energy(g.level[b][ch])
             } else if !g.zero[b][ch] {
                 let d = step(g.sf[b][ch]);
@@ -153,6 +159,20 @@ fn reconstruct(l: &Layout, g: &Group, chans: usize, off: [f64; 2], fill: [f64; F
             }
         }
     }
+    for (j, row) in g.tns.iter().enumerate() {
+        for (t, &(a, z)) in row.iter().zip(&l.tns_ranges).filter(|(t, _)| !t.is_empty()) {
+            let f = tns::lpc(t);
+            for o in out.iter_mut().take(chans) {
+                tns::synthesize(&mut o[j * m + a..j * m + z], &f);
+            }
+        }
+    }
+}
+
+/// 長い窓のフレームで、混合帯域にかかる範囲に TNS をかけるか (かけるなら、混合帯域の雑音も長い窓の中で作る)
+pub fn tns_on_mixed(l: &Layout, g: &Group) -> bool {
+    let from = l.bands.get(l.mixed_from).map_or(l.m, |b| b.0);
+    g.tns[0].iter().zip(&l.tns_ranges).any(|(t, &(_, z))| !t.is_empty() && z > from)
 }
 
 fn stream(l: &Layout, g: &Group, chans: usize, gain: &[f64], rng: &mut u32, out: &mut [Vec<Vec<f64>>]) {
@@ -201,7 +221,7 @@ pub fn decode_chunk(data: &[u8], info: &Info, c: usize) -> Result<(isize, Vec<Ve
     let (a, b) = (c * CHUNK, ((c + 1) * CHUNK).min(count));
     let range = info.chunks.get(c).ok_or_else(|| format!("Chunk {c} does not exist"))?;
     let mut dec = rc::Decoder::new(&data[range.clone()]);
-    let mut cd = Coding::new(&info.ll, &info.ls, info.chans);
+    let mut cd = Coding::new(&info.ll, &info.ls, info.chans, info.version >= 3);
     let mut r = Renderer::new(&info.ll, &info.ls, info.chans, b - a, info.off, info.fill, chunk_seed(c));
     let mut f = Frame { kind: Kind::Long, groups: Vec::new(), env: [0; SHORTS] };
     for fi in 0..b - a {
@@ -246,6 +266,8 @@ pub struct Renderer<'a> {
     coef_s: Vec<Vec<Vec<f64>>>,
     noise: Vec<Vec<Vec<f64>>>,
     tmp: Vec<Vec<f64>>,
+    /// 実験用: 混合帯域より下の係数がある帯域でも、0 の所を帯域ごとの雑音のレベルで埋める (データには記録しない)
+    band_fill: bool,
 }
 
 impl<'a> Renderer<'a> {
@@ -263,7 +285,14 @@ impl<'a> Renderer<'a> {
             coef_s: vec![vec![vec![0.0; MS]; SHORTS]; chans],
             noise: vec![vec![vec![0.0; MS]; SHORTS]; chans],
             tmp: vec![vec![0.0; M]; chans],
+            band_fill: false,
         }
+    }
+
+    /// 実験用: 混合帯域より下でも、0 の所を帯域ごとの雑音のレベルで埋める
+    pub fn with_band_fill(mut self, on: bool) -> Self {
+        self.band_fill = on;
+        self
     }
 
     pub fn frame(&mut self, fi: usize, f: &Frame) {
@@ -279,7 +308,7 @@ impl<'a> Renderer<'a> {
             let mut j0 = 0;
             for g in &f.groups {
                 let gain = env_gains(&f.env[j0..j0 + g.rows]);
-                reconstruct(self.ls, g, self.chans, self.off, self.fill, &gain, &mut self.rng, &mut self.tmp);
+                reconstruct(self.ls, g, self.chans, self.off, self.fill, &gain, &mut self.rng, &mut self.tmp, self.band_fill);
                 for ch in 0..self.chans {
                     for r in 0..g.rows {
                         self.coef_s[ch][j0 + r].copy_from_slice(&self.tmp[ch][r * MS..(r + 1) * MS]);
@@ -291,11 +320,11 @@ impl<'a> Renderer<'a> {
                 self.tf.synthesize(&self.coef_s[ch], Kind::Short, out[ch]);
             }
         } else {
-            reconstruct(self.ll, &f.groups[0], self.chans, self.off, self.fill, &[1.0], &mut self.rng, &mut self.coef_l);
+            reconstruct(self.ll, &f.groups[0], self.chans, self.off, self.fill, &[1.0], &mut self.rng, &mut self.coef_l, self.band_fill);
             for ch in 0..self.chans {
                 self.tf.synthesize(std::slice::from_ref(&self.coef_l[ch]), f.kind, out[ch]);
             }
-            if self.ll.mixed_from < self.ll.bands.len() {
+            if self.ll.mixed_from < self.ll.bands.len() && !tns_on_mixed(self.ll, &f.groups[0]) {
                 for w in self.noise.iter_mut().flatten() {
                     w.fill(0.0);
                 }
@@ -354,7 +383,7 @@ impl<'a> Stream<'a> {
             let c = self.g / CHUNK;
             let range = self.info.chunks.get(c).ok_or_else(|| format!("Chunk {c} does not exist"))?;
             self.dec = Some(rc::Decoder::new(&self.data[range.clone()]));
-            self.cd = Some(Coding::new(&self.info.ll, &self.info.ls, self.info.chans));
+            self.cd = Some(Coding::new(&self.info.ll, &self.info.ls, self.info.chans, self.info.version >= 3));
             self.r = Some(Renderer::new(&self.info.ll, &self.info.ls, self.info.chans, 0, self.info.off, self.info.fill, chunk_seed(c)));
             self.f = Frame { kind: Kind::Long, groups: Vec::new(), env: [0; SHORTS] };
             for (cr, rg) in self.carry.iter_mut().zip(self.ring.iter_mut()) {

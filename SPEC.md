@@ -1,4 +1,4 @@
-# KTC Specification (version 2)
+# KTC Specification (version 3)
 
 日本語版: [SPEC.ja.md](SPEC.ja.md)
 
@@ -12,16 +12,16 @@ It aims to make the data small while keeping the sound indistinguishable from th
   - See §2.2 and §6.5 of the [KT3 specification](https://github.com/KEITO00/kt3-format) for details.
 - All integers are little-endian.
 
-This document defines the layout of the data and the decoding steps of versions 1 and 2.
+This document defines the layout of the data and the decoding steps of versions 1, 2 and 3.
 The details of how the coefficients are packed (the contexts of the arithmetic coder and how the
-probabilities adapt) are defined by the reference implementation (section 7).
+probabilities adapt) are defined by the reference implementation (section 8).
 
 The key words "MUST", "MUST NOT" and "SHOULD" are used as described in RFC 2119.
 
 ## 1. Overview
 
 ```
-| Header      | 25 bytes (version 1), 27 bytes (version 2)
+| Header      | 25 bytes (version 1), 27 bytes (versions 2 and 3)
 | Chunk table | 4 + 4 × chunk count bytes
 | Chunk data  | sum of the chunk sizes
 ```
@@ -31,26 +31,30 @@ The key words "MUST", "MUST NOT" and "SHOULD" are used as described in RFC 2119.
 | Offset | Size | Type | Field | Description |
 |---|---|---|---|---|
 | 0 | 4 | — | magic | `K` `T` `C` `0x00` |
-| 4 | 1 | u8 | version | Version of the data layout (1 or 2) |
+| 4 | 1 | u8 | version | Version of the data layout (1, 2 or 3) |
 | 5 | 1 | u8 | channels | Number of channels (1 or 2) |
 | 6 | 2 | i8 × 2 | offsets | Offset of the positions where quantized values are restored, in units of 1/128 |
 | 8 | 4 | u32 | sampleRate | Sampling rate in Hz (8000 to 192000) |
 | 12 | 8 | u64 | length | Number of samples per channel (at most 2^31) |
 | 20 | 2 | u16 | windowLen | Length of the long window (2048) |
 | 22 | 3 | u8 × 3 | fill | Level of the noise that fills the coefficients quantized to 0, relative to the quantization step, in units of 1/512 |
-| 25 | 2 | u16 | mixedHz | Lowest frequency of the mixed bands (section 6) in Hz (version 2 only) |
+| 25 | 2 | u16 | mixedHz | Lowest frequency of the mixed bands (section 6) in Hz (versions 2 and 3 only) |
 
-- This document defines versions 1 and 2.
+- This document defines versions 1, 2 and 3.
 - The first value of `offsets` is used for values of magnitude 1, and the second for magnitude 2 or more.
 - `windowLen` MUST be 2048.
 - `fill` has three values, in this order: for bands whose largest magnitude is 1, 2, and 3 or more.
-- `mixedHz` is present only in version 2.
+- `mixedHz` is present only in versions 2 and 3.
 - A reader MUST NOT read data whose `magic` is different or whose `version` it does not know.
   - A different version has a different layout.
 - A reader that reads version 2 MUST also read version 1.
   - Files written in version 1 stay in use.
+- A reader that reads version 3 MUST also read versions 1 and 2.
+  - Files written in versions 1 and 2 stay in use.
 - A writer SHOULD write version 1 when it does not use mixed bands.
   - Readers that do not support version 2 can then read the data.
+- A writer SHOULD write version 2 or 1 when it does not use the flip flags or TNS (section 7).
+  - Readers that do not support version 3 can then read the data.
 
 ## 3. Chunk table
 
@@ -110,6 +114,7 @@ Each frame is decoded in this order:
    - They are the quantized values of the bands that have coefficients.
    - They are ordered by window, then by channel, then by band.
    - With two channels and mixed bands, the stereo values follow the coefficients of each group (6.3).
+   - In version 3, the TNS data of each window follows the coefficients and stereo values of each group (7.2).
 4. When there are mixed bands, read the noise envelope at the end of the frame (6.4).
 5. Restore the coefficients.
    - The quantized values are multiplied by the quantization step.
@@ -118,6 +123,7 @@ Each frame is decoded in this order:
    - Noise bands are filled with noise at the stored level.
    - Sum and difference bands are converted back to left and right.
    - Mixed bands are restored as described in 6.5 and 6.6.
+   - In version 3, the right channel of flipped parent bands is negated (7.1), and then the TNS filters are applied (7.2).
 6. Synthesize the audio.
    - Apply the inverse MDCT and the window, then overlap-add with the previous frame.
    - The windows are sine windows and the transitions between them.
@@ -211,7 +217,49 @@ After the coefficients of a group, the following values are stored for each pare
   - The division by 64 comes from the long-window coefficients having eight times the energy of the short-window ones, and from splitting the energy into eight windows.
 - How the noise values are made (the use of the random number generator and how the energy is matched) is defined by the reference implementation.
 
-## 7. Reference implementation
+## 7. Version 3
+
+Version 3 adds two tools to version 2: the flip flag of the mixed bands and TNS (temporal noise shaping).
+The header is the same as in version 2.
+
+### 7.1 Flip flag of the mixed bands
+
+- With two channels, each parent band of the mixed bands has a flag `flip` (0 or 1).
+  - It is stored before `iid`, under the same condition as `iid` (6.3).
+  - When the high frequencies are recorded with the left and right in opposite phase, the sum cancels out and the sounds become noise. The flag avoids this.
+- When `flip` is 1, the stored values describe the left and the negated right.
+  - The sum stores `(L − R) / √2`.
+  - The level ratio, the similarity and the difference prediction (6.3) also describe the left and the negated right.
+- The reader restores the left and right as in 6.5 and 6.6, and then negates the right of the parent band.
+  - This applies to both the coefficients and the noise.
+
+### 7.2 TNS
+
+- TNS stores a filter along the frequency axis for a window.
+  - The reader applies the inverse filter to the restored coefficients.
+  - The quantization noise and the noise of the mixed bands then follow the loudness changes inside the window, and no noise is heard before an attack.
+- The coefficients of a window are divided into three ranges.
+  - The ranges start at 100 Hz, 1000 Hz and 4000 Hz.
+  - Each range ends where the next one starts, and the last range ends at the top of the window.
+  - With `n` the window length (2048 or 256) and `m = n / 2`, the range that starts at `F` Hz starts at coefficient `min(m, max(0, ceil(F × n / sampleRate − 0.5)))`.
+- Each window has TNS data for each range.
+  - Long-window frames (including the transition windows) have one window.
+  - Short-window frames have eight windows, and the data of the windows of a group follows that group.
+- The TNS data of a range is a flag and, when the flag is 1, `p` values `i[1]` to `i[p]` from −7 to 7.
+  - `p` is 8 for long-window frames and 4 for short-window frames.
+- The filter is made from the values as follows.
+  - The reflection coefficients are `k[j] = sin(i[j] × π / 16)`.
+  - Starting with no coefficients, for `j` from 1 to `p`, set `a[t] = a[t] + k[j] × a[j − t]` for `t` from 1 to `j − 1` (using the values before this step), and then set `a[j] = k[j]`.
+- The filter is applied to each channel after the other parts of step 5 of section 5 (including 7.1).
+  - With `x[0]` to `x[L − 1]` the coefficients of the range, `x[q] = x[q] − (a[1] × x[q − 1] + … + a[p] × x[q − p])` is computed for `q` from 0 upward. Only the terms with `q − j ≥ 0` are used.
+  - The same filter is applied to all channels.
+- In long-window frames, when a range with TNS covers any coefficient of the mixed bands, the noise of the mixed bands is put into the long-window coefficients instead of being made with short windows (6.6).
+  - The noise energy of a band is the number of zeros × `E`.
+  - The noise envelope (6.4) is not used. A writer SHOULD store it as all 0.
+- The values of `sin(i × π / 16)` SHOULD be taken from a table instead of being computed.
+  - All devices then use the same values.
+
+## 8. Reference implementation
 
 The details of how the coefficients are packed are defined by the code of the reference
 implementation (`src` in this repository).
@@ -225,6 +273,7 @@ implementation (`src` in this repository).
 | Arithmetic coder and probability adaptation | `src/rc.rs` |
 | Probability mixing | `src/mix.rs` |
 | Restoring the coefficients and synthesis | `src/decode.rs` |
+| TNS filters (version 3) | `src/tns.rs` |
 | Functions for WebAssembly | `src/wasm.rs` |
 
 - The contexts of the arithmetic coder are computed with integers only.
@@ -233,7 +282,7 @@ implementation (`src` in this repository).
   - This comes from small differences in trigonometric and power functions.
   - It does not affect how the audio sounds.
 
-## 8. License
+## 9. License
 
 This specification is licensed under
 [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/).

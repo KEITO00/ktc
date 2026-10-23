@@ -36,6 +36,8 @@ pub struct Layout {
     pub parent_width: Vec<usize>,
     pub parents: usize,
     pub mixed_from: usize,
+    /// TNS (版 3) の範囲ごとの係数の範囲 [始まり, 終わり)
+    pub tns_ranges: [(usize, usize); crate::tns::RANGES],
 }
 
 impl Layout {
@@ -59,7 +61,9 @@ impl Layout {
         let class = (0..nb).map(|b| (b * CLASSES / nb).min(CLASSES - 1)).collect();
         let low_hz: Vec<f64> = bands.iter().map(|&(a, _)| hz(a)).collect();
         let mixed_from = if mixed_hz > 0.0 { low_hz.iter().position(|&f| f >= mixed_hz).unwrap_or(nb) } else { nb };
-        Layout { m, bands, class, low_hz, parent, parent_width, parents: ne, mixed_from }
+        let bin = |hz: f64| ((hz / (sr as f64 / n as f64) - 0.5).ceil().max(0.0) as usize).min(m);
+        let tns_ranges = std::array::from_fn(|i| (bin(crate::tns::RANGES_HZ[i]), crate::tns::RANGES_HZ.get(i + 1).map_or(m, |&h| bin(h))));
+        Layout { m, bands, class, low_hz, parent, parent_width, parents: ne, mixed_from, tns_ranges }
     }
 }
 

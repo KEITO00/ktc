@@ -6,6 +6,7 @@ pub mod format;
 pub mod mdct;
 pub mod mix;
 pub mod rc;
+pub mod tns;
 pub mod transform;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

@@ -4,7 +4,7 @@ use crate::rc;
 use crate::transform::{M, N, NS};
 
 pub const MAGIC: &[u8; 4] = b"KTC\0";
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 pub const FILL_KINDS: usize = 3;
 const HEADER: usize = 4 + 1 + 1 + 2 + 4 + 8 + 2 + FILL_KINDS;
 
@@ -24,12 +24,14 @@ pub struct Header {
     pub offsets: [i8; 2],
     pub fill: [u8; FILL_KINDS],
     pub mixed_hz: u16,
+    /// 版 3 (混合帯域の反転の印と TNS) で書く
+    pub v3: bool,
 }
 
 pub fn write(h: &Header, frames: &mut [Frame]) -> Vec<u8> {
     let ll = Layout::new(h.sr, N, h.mixed_hz as f64);
     let ls = Layout::new(h.sr, NS, h.mixed_hz as f64);
-    let version = if h.mixed_hz > 0 { 2 } else { 1 };
+    let version = if h.v3 { 3 } else if h.mixed_hz > 0 { 2 } else { 1 };
     let mut out = Vec::with_capacity(header_len(version));
     out.extend_from_slice(MAGIC);
     out.push(version);
@@ -45,7 +47,7 @@ pub fn write(h: &Header, frames: &mut [Frame]) -> Vec<u8> {
     let mut chunks: Vec<Vec<u8>> = Vec::new();
     let mut enc = rc::Encoder::new();
     let mut first = true;
-    coding::pack(&mut enc, &ll, &ls, h.chans, frames, |e| {
+    coding::pack(&mut enc, &ll, &ls, h.chans, version >= 3, frames, |e| {
         if !std::mem::take(&mut first) {
             chunks.push(std::mem::replace(e, rc::Encoder::new()).finish());
         }
@@ -62,6 +64,7 @@ pub fn write(h: &Header, frames: &mut [Frame]) -> Vec<u8> {
 }
 
 pub struct Info {
+    pub version: u8,
     pub chans: usize,
     pub sr: u32,
     pub len: usize,
@@ -117,5 +120,5 @@ pub fn info(data: &[u8]) -> Result<Info, String> {
         chunks.push(pos..pos + size);
         pos += size;
     }
-    Ok(Info { chans, sr, len, off, fill, chunks, ll: Layout::new(sr, N, mixed_hz), ls: Layout::new(sr, NS, mixed_hz) })
+    Ok(Info { version, chans, sr, len, off, fill, chunks, ll: Layout::new(sr, N, mixed_hz), ls: Layout::new(sr, NS, mixed_hz) })
 }

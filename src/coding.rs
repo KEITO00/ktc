@@ -45,6 +45,9 @@ struct Model {
     iid: [Prob; 40],
     icc: [Prob; 40],
     kp: [Prob; 40],
+    flip: [Prob; 4],
+    tns_on: [[Prob; 2]; crate::tns::RANGES],
+    tns_k: [[[Prob; 16]; crate::tns::ORDER_LONG]; crate::tns::RANGES],
 }
 
 impl Model {
@@ -71,6 +74,9 @@ impl Model {
             iid: [Prob::INIT; 40],
             icc: [Prob::INIT; 40],
             kp: [Prob::INIT; 40],
+            flip: [Prob::INIT; 4],
+            tns_on: [[Prob::INIT; 2]; crate::tns::RANGES],
+            tns_k: [[[Prob::INIT; 16]; crate::tns::ORDER_LONG]; crate::tns::RANGES],
         })
     }
 }
@@ -101,6 +107,8 @@ struct ChanState {
     prev_iid: Vec<i32>,
     prev_icc: Vec<i32>,
     prev_kp: Vec<i32>,
+    prev_flip: Vec<bool>,
+    prev_tns: [bool; crate::tns::RANGES],
 }
 
 impl ChanState {
@@ -116,6 +124,8 @@ impl ChanState {
             prev_iid: vec![0; np],
             prev_icc: vec![0; np],
             prev_kp: vec![0; np],
+            prev_flip: vec![false; np],
+            prev_tns: [false; crate::tns::RANGES],
         }
     }
 }
@@ -145,6 +155,9 @@ pub struct Group {
     pub iid: Vec<i32>,
     pub icc: Vec<i32>,
     pub kp: Vec<i32>,
+    pub flip: Vec<bool>,
+    /// 窓ごと・範囲ごとの TNS の反射係数の値 (版 3)。空ならかけない
+    pub tns: Vec<[Vec<i32>; crate::tns::RANGES]>,
 }
 
 impl Group {
@@ -162,6 +175,8 @@ impl Group {
             iid: vec![0; l.parents],
             icc: vec![0; l.parents],
             kp: vec![0; l.parents],
+            flip: vec![false; l.parents],
+            tns: vec![Default::default(); rows],
         }
     }
 }
@@ -181,7 +196,8 @@ pub fn fill_kind(g: &Group, ch: usize, lo: usize, hi: usize) -> usize {
     (top.clamp(1, FILL_KINDS as u32) - 1) as usize
 }
 
-fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st: &mut [ChanState], prev_ms: &mut [bool], g: &mut Group) {
+#[allow(clippy::too_many_arguments)]
+fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st: &mut [ChanState], prev_ms: &mut [bool], v3: bool, g: &mut Group) {
     let chans = st.len();
     let nb = l.bands.len();
     let m = l.m;
@@ -336,12 +352,17 @@ fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st:
         c.part(PART_SIDE);
         let s = &st[0];
         let (mut last, mut last_p): (Option<usize>, Option<usize>) = (None, None);
+        let mut last_flip = false;
         let mut coded = Vec::new();
         let mut b = l.mixed_from;
         while b < nb {
             let p = l.parent[b];
             let e = (b..nb).find(|&i| l.parent[i] != p).unwrap_or(nb);
             if (b..e).any(|i| !g.zero[i][0] || g.noise[i][0]) {
+                if v3 {
+                    g.flip[p] = c.bit(&mut md.flip[s.prev_flip[p] as usize * 2 + last_flip as usize], g.flip[p]);
+                    last_flip = g.flip[p];
+                }
                 let pred = |cur: &[i32], prev: &[i32], last: Option<usize>| match last {
                     Some(lp) => median(cur[lp], prev[p], cur[lp] + prev[p] - prev[lp]),
                     None => prev[p],
@@ -365,8 +386,28 @@ fn code_group<C: Coder>(c: &mut C, md: &mut Model, sq: &Stretch, l: &Layout, st:
         for (p, peaks) in coded {
             s.prev_iid[p] = g.iid[p];
             s.prev_icc[p] = g.icc[p];
+            s.prev_flip[p] = g.flip[p];
             if peaks {
                 s.prev_kp[p] = g.kp[p];
+            }
+        }
+    }
+    if v3 {
+        c.part(PART_SIDE);
+        let order = crate::tns::order(m);
+        for row in g.tns.iter_mut() {
+            for (r, t) in row.iter_mut().enumerate() {
+                let s = &mut st[0];
+                let on = c.bit(&mut md.tns_on[r][s.prev_tns[r] as usize], !t.is_empty());
+                s.prev_tns[r] = on;
+                if on {
+                    t.resize(order, 0);
+                    for (v, p) in t.iter_mut().zip(md.tns_k[r].iter_mut()) {
+                        *v = rc::sint(c, p, *v);
+                    }
+                } else {
+                    t.clear();
+                }
             }
         }
     }
@@ -433,10 +474,11 @@ pub(crate) struct Coding {
     ms_short: Vec<bool>,
     prev_kind: Kind,
     prev_shaped: bool,
+    v3: bool,
 }
 
 impl Coding {
-    pub(crate) fn new(ll: &Layout, ls: &Layout, chans: usize) -> Self {
+    pub(crate) fn new(ll: &Layout, ls: &Layout, chans: usize, v3: bool) -> Self {
         Coding {
             long: Model::new(ll.bands.len()),
             short: Model::new(ls.bands.len()),
@@ -451,6 +493,7 @@ impl Coding {
             ms_short: vec![false; ls.bands.len()],
             prev_kind: Kind::Long,
             prev_shaped: false,
+            v3,
         }
     }
 }
@@ -499,7 +542,7 @@ pub(crate) fn code_frame<C: Coder>(c: &mut C, cd: &mut Coding, ll: &Layout, ls: 
             f.groups = rows.iter().map(|&r| Group::new(ls, r)).collect();
         }
         for g in f.groups.iter_mut() {
-            code_group(c, &mut cd.short, &cd.sq, ls, &mut cd.st_short, &mut cd.ms_short, g);
+            code_group(c, &mut cd.short, &cd.sq, ls, &mut cd.st_short, &mut cd.ms_short, cd.v3, g);
         }
     } else {
         if was_short {
@@ -510,7 +553,7 @@ pub(crate) fn code_frame<C: Coder>(c: &mut C, cd: &mut Coding, ll: &Layout, ls: 
         if f.groups.len() != 1 || f.groups[0].m != M {
             f.groups = vec![Group::new(ll, 1)];
         }
-        code_group(c, &mut cd.long, &cd.sq, ll, &mut cd.st_long, &mut cd.ms_long, &mut f.groups[0]);
+        code_group(c, &mut cd.long, &cd.sq, ll, &mut cd.st_long, &mut cd.ms_long, cd.v3, &mut f.groups[0]);
     }
     if ll.mixed_from < ll.bands.len() {
         c.part(PART_SIDE);
@@ -533,10 +576,10 @@ pub(crate) fn code_frame<C: Coder>(c: &mut C, cd: &mut Coding, ll: &Layout, ls: 
     }
 }
 
-pub fn pack<C: Coder>(c: &mut C, ll: &Layout, ls: &Layout, chans: usize, frames: &mut [Frame], mut each: impl FnMut(&mut C)) {
+pub fn pack<C: Coder>(c: &mut C, ll: &Layout, ls: &Layout, chans: usize, v3: bool, frames: &mut [Frame], mut each: impl FnMut(&mut C)) {
     for chunk in frames.chunks_mut(CHUNK) {
         each(c);
-        let mut cd = Coding::new(ll, ls, chans);
+        let mut cd = Coding::new(ll, ls, chans, v3);
         for f in chunk.iter_mut() {
             code_frame(c, &mut cd, ll, ls, f);
         }

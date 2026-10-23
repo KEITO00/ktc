@@ -4,6 +4,26 @@ The `version` byte of the header describes the layout of the data.
 
 ヘッダーの `version` は、データ構造の版を表します。
 
+## Version 3 (2026-10-24)
+
+- Added the flip flag of the mixed bands (section 7.1).
+  - With two channels, each parent band of the mixed bands can store the left and the negated right.
+  - When the high frequencies are recorded with the left and right in opposite phase, the sum no longer cancels out.
+- Added TNS (section 7.2).
+  - Each window can store a filter along the frequency axis for each of three ranges (from 100 Hz, 1000 Hz and 4000 Hz).
+  - The quantization noise and the noise of the mixed bands follow the loudness changes inside the window, so that no noise is heard before an attack.
+- The header is the same as in version 2.
+- Readers that read version 3 also read versions 1 and 2.
+
+- 混合帯域の反転の印を追加しました（7.1）。
+  - 2 チャンネルの場合、混合帯域の元の帯域ごとに、左と反転した右を記録できます。
+  - 高い周波数が左右逆位相で記録されていても、和が打ち消し合わないようにするためです。
+- TNS を追加しました（7.2）。
+  - 窓ごとに、3 つの範囲（100 Hz・1000 Hz・4000 Hz から）のそれぞれに、周波数の向きのフィルターを記録できます。
+  - 量子化の雑音と混合帯域の雑音が窓の中の音量の変化に沿い、音の立ち上がりの前に雑音が聞こえないようにするためです。
+- ヘッダーは版 2 と同じです。
+- 版 3 に対応した読み込み側は、版 1 と版 2 も読み込めます。
+
 ## Looping audio (2026-10-18)
 
 - Added section 4.2 about looping audio.
